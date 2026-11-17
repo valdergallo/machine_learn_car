@@ -5,7 +5,6 @@ Built with standard Python library (no external dependencies required).
 """
 
 import sys
-import os
 import time
 import random
 import argparse
@@ -341,7 +340,6 @@ def train_agent(env, agent=None, episodes=3000, verbose=True):
         agent = QLearningAgent(alpha=0.2, gamma=0.98, epsilon=1.0, eps_min=0.02, eps_decay=0.998)
         
     start_time = time.time()
-    successes = 0
     recent_history = []
     
     if verbose:
