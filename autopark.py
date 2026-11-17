@@ -57,7 +57,7 @@ ACTION_SYMBOLS = ["▲ FWD", "▼ REV", "◄ LEFT", "► RIGHT"]
 # -----------------------------------------------------------------------------
 FALLBACK_MAP = [
     "################",  # 0 Wall
-    "#|C|P|C|P|C|P| #",  # 1 Top bays with multiple parking spots 'P'
+    "#|C| |C|P|C|P| #",  # 1 Top bays with multiple parking spots 'P'
     "#              #",  # 2 Upper driveway / maneuvering aisle
     "#              #",  # 3 Driving lane
     "#              #",  # 4 Driving lane
