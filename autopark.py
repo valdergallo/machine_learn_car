@@ -5,6 +5,7 @@ Built with standard Python library (no external dependencies required).
 """
 
 import sys
+import os
 import time
 import random
 import argparse
@@ -54,9 +55,9 @@ ACTION_SYMBOLS = ["▲ FWD", "▼ REV", "◄ LEFT", "► RIGHT"]
 # -----------------------------------------------------------------------------
 # Parking Environment
 # -----------------------------------------------------------------------------
-DEFAULT_MAP = [
+FALLBACK_MAP = [
     "################",  # 0 Wall
-    "#|C| |C|P|C| | #",  # 1 Top bays: Parked Cars 'C', Target 'P' at (8, 1)
+    "#|C|P|C|P|C|P| #",  # 1 Top bays with multiple parking spots 'P'
     "#              #",  # 2 Upper driveway / maneuvering aisle
     "#              #",  # 3 Driving lane
     "#              #",  # 4 Driving lane
@@ -65,16 +66,31 @@ DEFAULT_MAP = [
     "################",  # 7 Bottom Wall
 ]
 
+def load_map_file(path="default_map.txt"):
+    """Loads an ASCII parking map from a file, falling back to embedded map."""
+    if os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as f:
+            lines = [line.rstrip("\r\n") for line in f if line.rstrip("\r\n")]
+            if lines:
+                return lines
+    return FALLBACK_MAP
+
+DEFAULT_MAP = load_map_file("default_map.txt")
+
 class ParkingEnvironment:
-    def __init__(self, layout=None):
-        self.layout = layout or DEFAULT_MAP
+    def __init__(self, layout=None, map_file="default_map.txt"):
+        if layout is not None:
+            self.layout = layout
+        else:
+            self.layout = load_map_file(map_file)
+            
         self.height = len(self.layout)
         self.width  = len(self.layout[0])
         
-        self.obstacles = set()
-        self.passable  = set()
-        self.target    = None
-        self.start     = None
+        self.obstacles  = set()
+        self.passable   = set()
+        self.targets    = []
+        self.start      = None
         
         for y in range(self.height):
             for x in range(self.width):
@@ -82,7 +98,7 @@ class ParkingEnvironment:
                 if ch in ('#', 'C', '|'):
                     self.obstacles.add((x, y))
                 elif ch == 'P':
-                    self.target = (x, y)
+                    self.targets.append((x, y))
                     self.passable.add((x, y))
                 elif ch == 'S':
                     self.start = (x, y)
@@ -90,7 +106,22 @@ class ParkingEnvironment:
                 else:
                     self.passable.add((x, y))
                     
-        self.valid_spawns = [p for p in self.passable if p != self.target]
+        if not self.targets:
+            raise ValueError("Map must contain at least one parking target 'P'")
+        if self.start is None:
+            raise ValueError("Map must contain a start gate 'S'")
+            
+        self.target_set   = set(self.targets)
+        self.valid_spawns = [p for p in self.passable if p not in self.target_set]
+
+    @property
+    def target(self):
+        """Returns the first target for backwards compatibility."""
+        return self.targets[0]
+
+    def get_closest_target(self, x, y):
+        """Returns the nearest parking bay (tx, ty) using Manhattan distance."""
+        return min(self.targets, key=lambda t: abs(x - t[0]) + abs(y - t[1]))
         
     def is_obstacle(self, x, y):
         if x < 0 or x >= self.width or y < 0 or y >= self.height:
@@ -142,14 +173,14 @@ class ParkingEnvironment:
             # Collision penalty
             return state, -60.0, True, "CRASH"
             
-        if (nx, ny) == self.target:
+        if (nx, ny) in self.target_set:
             # Parked! Extra bonus if parked head-in facing North (0)
             bonus = 280.0 if no == 0 else 220.0
             return (nx, ny, no), bonus, True, "PARKED"
             
-        # Transit step: step penalty + distance shaping toward target
-        d_curr = abs(x - self.target[0]) + abs(y - self.target[1])
-        d_next = abs(nx - self.target[0]) + abs(ny - self.target[1])
+        # Transit step: step penalty + distance shaping toward nearest target
+        d_curr = min(abs(x - tx) + abs(y - ty) for tx, ty in self.targets)
+        d_next = min(abs(nx - tx) + abs(ny - ty) for tx, ty in self.targets)
         
         # Reward forward road driving over reversing in open lane
         rev_penalty = -0.3 if action == 1 else 0.0
@@ -225,11 +256,11 @@ class AsciiVisualizer:
         return f"[{self.c(Color.GREEN if filled > 2 else Color.RED, bar)}] {distance:2d}m"
 
     def render_frame(self, state, last_action=None, step_count=0, 
-                     total_reward=0.0, status="DRIVING", 
-                     visited_path=None, q_agent=None, ep_num=None):
+                     status="DRIVING", visited_path=None, q_agent=None):
         x, y, o = state
         lidar = self.env.get_lidar(x, y, o)
-        dist_to_target = abs(x - self.env.target[0]) + abs(y - self.env.target[1])
+        closest_tgt = self.env.get_closest_target(x, y)
+        dist_to_target = abs(x - closest_tgt[0]) + abs(y - closest_tgt[1])
         q_vals = q_agent.get_q(state) if q_agent else [0.0, 0.0, 0.0, 0.0]
         
         W = 64
@@ -259,7 +290,7 @@ class AsciiVisualizer:
         r3_c2 = f" Left Radar : {self.render_sensor_bar(lidar['left'])}"
         lines.append(self.c(Color.CYAN, "│") + pad_to(r3_c1, w1) + self.c(Color.CYAN, "│") + pad_to(r3_c2, w2) + self.c(Color.CYAN, "│"))
         
-        tgt_display = f"Bay (8,1)  Dist: {dist_to_target}m"
+        tgt_display = f"Bay {closest_tgt}  Dist: {dist_to_target}m"
         r4_c1 = f" Target : {self.c(Color.GREEN, tgt_display)}"
         r4_c2 = f" Right Radar: {self.render_sensor_bar(lidar['right'])}"
         lines.append(self.c(Color.CYAN, "│") + pad_to(r4_c1, w1) + self.c(Color.CYAN, "│") + pad_to(r4_c2, w2) + self.c(Color.CYAN, "│"))
@@ -298,7 +329,7 @@ class AsciiVisualizer:
                         row_cells.append(self.c(Color.BG_RED + Color.WHITE + Color.BOLD, "[*]"))
                     else:
                         row_cells.append(self.c(Color.CYAN + Color.BOLD, car_sym))
-                elif (px, py) == self.env.target:
+                elif (px, py) in self.env.target_set:
                     # Target Bay
                     row_cells.append(self.c(Color.GREEN + Color.BOLD, "[P]"))
                 elif (px, py) == self.env.start:
@@ -418,11 +449,9 @@ def run_animated_episode(env, agent, visualizer, start_state=None,
                 state=state,
                 last_action=last_action,
                 step_count=step,
-                total_reward=total_reward,
                 status=status,
                 visited_path=visited,
-                q_agent=agent,
-                ep_num=ep_num
+                q_agent=agent
             )
             
             # Position cursor at top-left
@@ -485,11 +514,9 @@ def live_training_view(env, visualizer, episodes=400, step_delay=0.04):
                         state=state,
                         last_action=action,
                         step_count=step,
-                        total_reward=total_reward,
                         status=info,
                         visited_path=visited,
-                        q_agent=agent,
-                        ep_num=ep
+                        q_agent=agent
                     )
                     sys.stdout.write("\033[H\033[2J")
                     print(f" {Color.BOLD}WATCHING LIVE Q-LEARNING: Episode {ep}/{episodes} (Epsilon: {agent.epsilon*100:.1f}%){Color.RESET}\n")
@@ -593,12 +620,14 @@ def main():
                         help="Execution mode (default: demo)")
     parser.add_argument("--speed", type=float, default=0.20,
                         help="Animation delay in seconds per step (default: 0.20)")
+    parser.add_argument("--map", type=str, default="default_map.txt",
+                        help="Path to custom ASCII map file (default: default_map.txt)")
     parser.add_argument("--no-color", action="store_true",
                         help="Disable ANSI colors")
     args = parser.parse_args()
     
     use_color = not args.no_color
-    env = ParkingEnvironment()
+    env = ParkingEnvironment(map_file=args.map)
     visualizer = AsciiVisualizer(env, use_color=use_color)
     
     if args.mode == "demo":
